@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>city_roads</name>
+  <version>0.0.1</version>
+  <description>City roads competition package for lane driving, sign recognition, and event handling.</description>
+
+  <maintainer email="maintainer@example.com">Codex</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>cv_bridge</depend>
+  <depend>geometry_msgs</depend>
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>usb_cam</depend>
+  <depend>turn_on_ycrobot</depend>
+
+  <exec_depend>python-opencv</exec_depend>
+  <exec_depend>python-yaml</exec_depend>
+
+  <export/>
+</package>

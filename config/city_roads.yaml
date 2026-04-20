@@ -1,0 +1,94 @@
+team_name: "TeamName"
+
+image_topic: "/usb_cam/image_raw"
+scan_topic: "/scan"
+cmd_vel_topic: "/cmd_vel"
+debug_image_topic: "/city_roads/debug_image"
+voice_topic: "/city_roads/voice"
+
+frame_skip: 1
+use_laser: true
+publish_debug_image: true
+
+line_hsv_lower: [0, 0, 0]
+line_hsv_upper: [180, 255, 85]
+line_roi: [0.0, 0.58, 1.0, 1.0]
+line_search_min_area: 250
+line_center_bias_px: 0
+line_kp: 0.0055
+line_kd: 0.0010
+line_search_turn_speed: 0.22
+
+cruise_speed: 0.20
+limited_speed: 0.10
+turn_speed: 0.12
+lane_change_speed: 0.12
+cone_avoid_speed: 0.10
+finish_speed: 0.10
+max_angular_speed: 0.55
+
+crosswalk_white_threshold: 185
+crosswalk_roi: [0.15, 0.52, 0.85, 0.76]
+crosswalk_min_row_ratio: 0.32
+crosswalk_min_groups: 4
+crosswalk_stop_seconds: 2.0
+crosswalk_cooldown_seconds: 5.0
+
+traffic_light_roi: [0.35, 0.05, 0.65, 0.28]
+traffic_light_red_area: 120
+traffic_light_green_area: 120
+traffic_light_red1_lower: [0, 100, 100]
+traffic_light_red1_upper: [12, 255, 255]
+traffic_light_red2_lower: [165, 100, 100]
+traffic_light_red2_upper: [180, 255, 255]
+traffic_light_green_lower: [40, 80, 80]
+traffic_light_green_upper: [95, 255, 255]
+
+cone_roi: [0.20, 0.36, 0.80, 0.92]
+cone_min_area: 700
+cone_red1_lower: [0, 120, 80]
+cone_red1_upper: [12, 255, 255]
+cone_red2_lower: [165, 120, 80]
+cone_red2_upper: [180, 255, 255]
+cone_avoid_seconds: 1.2
+cone_avoid_turn: 0.42
+cone_cooldown_seconds: 4.0
+
+laser_front_angle_deg: 16
+laser_front_stop_distance: 0.55
+laser_front_clear_distance: 0.75
+pedestrian_clear_hold_seconds: 0.6
+
+finish_line_roi: [0.05, 0.78, 0.95, 0.98]
+finish_line_white_threshold: 190
+finish_line_min_ratio: 0.40
+finish_roll_seconds: 0.8
+
+template_dir: "$(find city_roads)/templates"
+template_match_scales: [0.8, 1.0, 1.2]
+template_match_threshold: 0.55
+template_detect_every_n_frames: 3
+template_roi: [0.10, 0.10, 0.90, 0.55]
+sign_templates:
+  turn_left: "turn_left.png"
+  turn_right: "turn_right.png"
+  straight: "straight.png"
+  speed_limit: "speed_limit.png"
+  speed_unlimit: "speed_unlimit.png"
+  lane_change_left: "lane_change_left.png"
+  lane_change_right: "lane_change_right.png"
+  lane_change: "lane_change.png"
+  danger: "danger.png"
+
+turn_seconds: 1.2
+turn_left_angular: 0.42
+turn_right_angular: -0.42
+straight_seconds: 0.5
+
+lane_change_default_direction: "left"
+lane_change_seconds: 1.0
+lane_change_angular: 0.36
+
+voice_backend: "topic"
+voice_command: "espeak-ng -v zh"
+voice_cooldown_seconds: 2.0

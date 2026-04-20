@@ -1,0 +1,33 @@
+<launch>
+  <arg name="car_mode" default="senior_4wd_bs"/>
+  <arg name="video_device" default="/dev/video0"/>
+  <arg name="use_lidar" default="true"/>
+  <arg name="publish_debug_image" default="true"/>
+  <arg name="voice_backend" default="topic"/>
+
+  <rosparam command="load" file="$(find city_roads)/config/city_roads.yaml"/>
+  <param name="/city_roads_controller/use_laser" value="$(arg use_lidar)"/>
+  <param name="/city_roads_controller/publish_debug_image" value="$(arg publish_debug_image)"/>
+  <param name="/city_roads_voice/voice_backend" value="$(arg voice_backend)"/>
+
+  <include file="$(find turn_on_ycrobot)/launch/turn_on_ycrobot.launch">
+    <arg name="car_mode" value="$(arg car_mode)"/>
+    <arg name="navigation" value="false"/>
+  </include>
+
+  <group if="$(arg use_lidar)">
+    <include file="$(find turn_on_ycrobot)/launch/ycrobot_lidar.launch"/>
+  </group>
+
+  <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" output="screen">
+    <param name="video_device" value="$(arg video_device)"/>
+    <param name="image_width" value="640"/>
+    <param name="image_height" value="480"/>
+    <param name="pixel_format" value="yuyv"/>
+    <param name="camera_frame_id" value="usb_cam"/>
+    <param name="io_method" value="mmap"/>
+  </node>
+
+  <node name="city_roads_controller" pkg="city_roads" type="city_roads_controller.py" output="screen"/>
+  <node name="city_roads_voice" pkg="city_roads" type="city_roads_voice.py" output="screen"/>
+</launch>

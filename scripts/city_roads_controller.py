@@ -40,6 +40,14 @@ def hsv_mask(image_hsv, lower, upper):
     return cv2.inRange(image_hsv, lower_np, upper_np)
 
 
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).lower() in ["1", "true", "yes", "on"]
+
+
 def find_contours(binary_image):
     result = cv2.findContours(binary_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if len(result) == 3:
@@ -122,8 +130,17 @@ class CityRoadsController(object):
         self.debug_image_topic = rospy.get_param("~debug_image_topic", rospy.get_param("/debug_image_topic", "/city_roads/debug_image"))
         self.voice_topic = rospy.get_param("~voice_topic", rospy.get_param("/voice_topic", "/city_roads/voice"))
         self.frame_skip = int(rospy.get_param("~frame_skip", rospy.get_param("/frame_skip", 1)))
-        self.use_laser = bool(rospy.get_param("~use_laser", rospy.get_param("/use_laser", True)))
-        self.publish_debug_image = bool(rospy.get_param("~publish_debug_image", rospy.get_param("/publish_debug_image", True)))
+        self.use_laser = parse_bool(rospy.get_param("~use_laser", rospy.get_param("/use_laser", True)))
+        self.publish_debug_image = parse_bool(rospy.get_param("~publish_debug_image", rospy.get_param("/publish_debug_image", True)))
+
+        self.lane_mode = rospy.get_param("~lane_mode", rospy.get_param("/lane_mode", "single_mask"))
+        self.yellow_hsv_lower = rospy.get_param("~yellow_hsv_lower", rospy.get_param("/yellow_hsv_lower", [15, 60, 60]))
+        self.yellow_hsv_upper = rospy.get_param("~yellow_hsv_upper", rospy.get_param("/yellow_hsv_upper", [40, 255, 255]))
+        self.lane_roi = rospy.get_param("~lane_roi", rospy.get_param("/lane_roi", [0.0, 0.58, 1.0, 1.0]))
+        self.left_line_min_area = int(rospy.get_param("~left_line_min_area", rospy.get_param("/left_line_min_area", 120)))
+        self.right_line_min_area = int(rospy.get_param("~right_line_min_area", rospy.get_param("/right_line_min_area", 120)))
+        self.expected_lane_width_px = int(rospy.get_param("~expected_lane_width_px", rospy.get_param("/expected_lane_width_px", 260)))
+        self.allow_single_side_recover = parse_bool(rospy.get_param("~allow_single_side_recover", rospy.get_param("/allow_single_side_recover", True)))
 
         self.line_hsv_lower = rospy.get_param("~line_hsv_lower", rospy.get_param("/line_hsv_lower", [0, 0, 0]))
         self.line_hsv_upper = rospy.get_param("~line_hsv_upper", rospy.get_param("/line_hsv_upper", [180, 255, 85]))
@@ -336,6 +353,11 @@ class CityRoadsController(object):
         return cmd, debug
 
     def detect_lane(self, frame, hsv, debug):
+        if self.lane_mode == "dual_yellow":
+            return self.detect_dual_yellow_lane(frame, hsv, debug)
+        return self.detect_single_mask_lane(frame, hsv, debug)
+
+    def detect_single_mask_lane(self, frame, hsv, debug):
         height, width = frame.shape[:2]
         x1, y1, x2, y2 = ratio_to_rect(width, height, self.line_roi)
         roi_hsv = hsv[y1:y2, x1:x2]
@@ -369,6 +391,96 @@ class CityRoadsController(object):
         error = (cx_global - (width // 2 + self.line_center_bias_px))
         cv2.circle(debug, (cx_global, cy_global), 8, (255, 0, 255), -1)
         cv2.line(debug, (width // 2 + self.line_center_bias_px, y1), (width // 2 + self.line_center_bias_px, y2), (255, 255, 0), 2)
+        return error, True
+
+    def extract_center_from_contours(self, contours, min_area):
+        best = None
+        best_area = 0.0
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < min_area:
+                continue
+            if area > best_area:
+                best = contour
+                best_area = area
+
+        if best is None:
+            return None, None
+
+        moments = cv2.moments(best)
+        if moments["m00"] == 0:
+            return None, None
+
+        cx = int(moments["m10"] / moments["m00"])
+        cy = int(moments["m01"] / moments["m00"])
+        return best, (cx, cy)
+
+    def detect_dual_yellow_lane(self, frame, hsv, debug):
+        height, width = frame.shape[:2]
+        x1, y1, x2, y2 = ratio_to_rect(width, height, self.lane_roi)
+        roi_hsv = hsv[y1:y2, x1:x2]
+        roi_width = max(1, x2 - x1)
+        roi_height = max(1, y2 - y1)
+        split_x = roi_width // 2
+
+        mask = hsv_mask(roi_hsv, self.yellow_hsv_lower, self.yellow_hsv_upper)
+        kernel = np.ones((5, 5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+        left_mask = mask[:, :split_x]
+        right_mask = mask[:, split_x:]
+
+        left_contour, left_center = self.extract_center_from_contours(find_contours(left_mask), self.left_line_min_area)
+        right_contour, right_center = self.extract_center_from_contours(find_contours(right_mask), self.right_line_min_area)
+
+        reference_x = width // 2 + self.line_center_bias_px
+        cv2.rectangle(debug, (x1, y1), (x2, y2), (0, 255, 255), 1)
+        cv2.line(debug, (reference_x, y1), (reference_x, y2), (255, 255, 0), 2)
+
+        left_global = None
+        right_global = None
+
+        if left_contour is not None:
+            cv2.drawContours(debug[y1:y2, x1:x1 + split_x], [left_contour], -1, (0, 255, 255), 2)
+            left_global = (x1 + left_center[0], y1 + left_center[1])
+            cv2.circle(debug, left_global, 7, (0, 255, 255), -1)
+            cv2.putText(debug, "LEFT", (left_global[0] - 18, max(15, left_global[1] - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+
+        if right_contour is not None:
+            cv2.drawContours(debug[y1:y2, x1 + split_x:x2], [right_contour], -1, (0, 165, 255), 2, offset=(split_x, 0))
+            right_global = (x1 + split_x + right_center[0], y1 + right_center[1])
+            cv2.circle(debug, right_global, 7, (0, 165, 255), -1)
+            cv2.putText(debug, "RIGHT", (right_global[0] - 22, max(15, right_global[1] - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 165, 255), 1)
+
+        lane_center_x = None
+        lane_center_y = y1 + roi_height // 2
+        lane_source = "NONE"
+
+        if left_global is not None and right_global is not None:
+            lane_center_x = int((left_global[0] + right_global[0]) / 2.0)
+            lane_center_y = int((left_global[1] + right_global[1]) / 2.0)
+            lane_source = "DUAL"
+        elif self.allow_single_side_recover and left_global is not None:
+            lane_center_x = int(left_global[0] + self.expected_lane_width_px / 2.0)
+            lane_center_y = left_global[1]
+            lane_source = "LEFT_RECOVER"
+        elif self.allow_single_side_recover and right_global is not None:
+            lane_center_x = int(right_global[0] - self.expected_lane_width_px / 2.0)
+            lane_center_y = right_global[1]
+            lane_source = "RIGHT_RECOVER"
+
+        if lane_center_x is None:
+            return self.last_line_error, False
+
+        lane_center_x = int(clamp(lane_center_x, x1, x2 - 1))
+        error = lane_center_x - reference_x
+
+        cv2.circle(debug, (lane_center_x, lane_center_y), 8, (255, 0, 255), -1)
+        cv2.putText(debug, "LANE %s" % lane_source, (x1, max(15, y1 - 5)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
         return error, True
 
     def detect_crosswalk(self, frame, debug):

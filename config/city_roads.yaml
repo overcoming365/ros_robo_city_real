@@ -10,6 +10,15 @@ frame_skip: 1
 use_laser: true
 publish_debug_image: true
 
+lane_mode: "dual_yellow"
+yellow_hsv_lower: [15, 60, 60]
+yellow_hsv_upper: [40, 255, 255]
+lane_roi: [0.0, 0.58, 1.0, 1.0]
+left_line_min_area: 120
+right_line_min_area: 120
+expected_lane_width_px: 260
+allow_single_side_recover: true
+
 line_hsv_lower: [0, 0, 0]
 line_hsv_upper: [180, 255, 85]
 line_roi: [0.0, 0.58, 1.0, 1.0]

@@ -52,6 +52,7 @@ traffic_light_red2_lower: [165, 100, 100]
 traffic_light_red2_upper: [180, 255, 255]
 traffic_light_green_lower: [40, 80, 80]
 traffic_light_green_upper: [95, 255, 255]
+enable_red_light_stop: false
 
 cone_roi: [0.20, 0.36, 0.80, 0.92]
 cone_min_area: 700

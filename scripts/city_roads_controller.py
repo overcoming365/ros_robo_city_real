@@ -175,6 +175,7 @@ class CityRoadsController(object):
         self.tl_red2_upper = rospy.get_param("~traffic_light_red2_upper", rospy.get_param("/traffic_light_red2_upper", [180, 255, 255]))
         self.tl_green_lower = rospy.get_param("~traffic_light_green_lower", rospy.get_param("/traffic_light_green_lower", [40, 80, 80]))
         self.tl_green_upper = rospy.get_param("~traffic_light_green_upper", rospy.get_param("/traffic_light_green_upper", [95, 255, 255]))
+        self.enable_red_light_stop = parse_bool(rospy.get_param("~enable_red_light_stop", rospy.get_param("/enable_red_light_stop", False)))
 
         self.cone_roi = rospy.get_param("~cone_roi", rospy.get_param("/cone_roi", [0.20, 0.36, 0.80, 0.92]))
         self.cone_min_area = int(rospy.get_param("~cone_min_area", rospy.get_param("/cone_min_area", 700)))
@@ -293,10 +294,10 @@ class CityRoadsController(object):
         if self.active_mode and current >= self.mode_until:
             self.clear_mode()
 
-        if light_state == "red":
+        if self.enable_red_light_stop and light_state == "red":
             self.pending_stop_reason = "red_light"
             self.say("red_light")
-        elif light_state == "green" and self.pending_stop_reason == "red_light":
+        elif self.enable_red_light_stop and light_state == "green" and self.pending_stop_reason == "red_light":
             self.pending_stop_reason = None
             self.say("green_light")
 
@@ -306,7 +307,7 @@ class CityRoadsController(object):
             cv2.putText(debug, "WAIT PEDESTRIAN", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             return Twist(), debug
 
-        if self.pending_stop_reason == "red_light":
+        if self.enable_red_light_stop and self.pending_stop_reason == "red_light":
             cv2.putText(debug, "RED LIGHT STOP", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             return Twist(), debug
 

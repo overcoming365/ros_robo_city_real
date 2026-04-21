@@ -110,6 +110,7 @@ class CityRoadsController(object):
         self.last_line_error = 0.0
         self.last_voice = {}
         self.front_min_range = float("inf")
+        self.last_lane_debug = {}
 
         self.speed_mode = "cruise"
         self.pending_stop_reason = None
@@ -141,6 +142,18 @@ class CityRoadsController(object):
         self.right_line_min_area = int(rospy.get_param("~right_line_min_area", rospy.get_param("/right_line_min_area", 120)))
         self.expected_lane_width_px = int(rospy.get_param("~expected_lane_width_px", rospy.get_param("/expected_lane_width_px", 260)))
         self.allow_single_side_recover = parse_bool(rospy.get_param("~allow_single_side_recover", rospy.get_param("/allow_single_side_recover", True)))
+        self.lane_follow_strategy = rospy.get_param("~lane_follow_strategy", rospy.get_param("/lane_follow_strategy", "dual_center"))
+        self.left_edge_target_ratio = float(rospy.get_param("~left_edge_target_ratio", rospy.get_param("/left_edge_target_ratio", 0.125)))
+        self.left_edge_zone_max_ratio = float(rospy.get_param("~left_edge_zone_max_ratio", rospy.get_param("/left_edge_zone_max_ratio", 0.25)))
+        self.left_edge_strong_correction_ratio = float(rospy.get_param("~left_edge_strong_correction_ratio", rospy.get_param("/left_edge_strong_correction_ratio", 0.50)))
+        self.crawl_speed = float(rospy.get_param("~crawl_speed", rospy.get_param("/crawl_speed", 0.06)))
+        self.small_turn_angular = float(rospy.get_param("~small_turn_angular", rospy.get_param("/small_turn_angular", 0.12)))
+        self.medium_turn_angular = float(rospy.get_param("~medium_turn_angular", rospy.get_param("/medium_turn_angular", 0.20)))
+        self.strong_turn_angular = float(rospy.get_param("~strong_turn_angular", rospy.get_param("/strong_turn_angular", 0.32)))
+        self.control_pulse_seconds = float(rospy.get_param("~control_pulse_seconds", rospy.get_param("/control_pulse_seconds", 0.18)))
+        self.control_idle_seconds = float(rospy.get_param("~control_idle_seconds", rospy.get_param("/control_idle_seconds", 0.08)))
+        self.roundabout_direction = rospy.get_param("~roundabout_direction", rospy.get_param("/roundabout_direction", "left"))
+        self.debug_draw_all_lane_contours = parse_bool(rospy.get_param("~debug_draw_all_lane_contours", rospy.get_param("/debug_draw_all_lane_contours", True)))
 
         self.line_hsv_lower = rospy.get_param("~line_hsv_lower", rospy.get_param("/line_hsv_lower", [0, 0, 0]))
         self.line_hsv_upper = rospy.get_param("~line_hsv_upper", rospy.get_param("/line_hsv_upper", [180, 255, 85]))
@@ -247,6 +260,12 @@ class CityRoadsController(object):
         self.mode_linear = 0.0
         self.mode_angular = 0.0
 
+    def pulse_active(self):
+        cycle = self.control_pulse_seconds + self.control_idle_seconds
+        if cycle <= 0.0:
+            return True
+        return (now_sec() % cycle) < self.control_pulse_seconds
+
     def scan_callback(self, msg):
         front_samples = []
         angle_limit = math.radians(self.laser_front_angle_deg)
@@ -334,13 +353,21 @@ class CityRoadsController(object):
             cv2.putText(debug, self.active_mode, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
             return cmd, debug
 
-        speed = self.limited_speed if self.speed_mode == "limited" else self.cruise_speed
         cmd = Twist()
         if not line_found:
-            cmd.linear.x = speed * 0.5
+            search_speed = self.crawl_speed if self.lane_follow_strategy == "left_edge_hold" else (
+                self.limited_speed if self.speed_mode == "limited" else self.cruise_speed) * 0.5
+            cmd.linear.x = search_speed
             cmd.angular.z = self.line_search_turn_speed
             cv2.putText(debug, "SEARCH LINE", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
             return cmd, debug
+
+        if self.lane_follow_strategy == "left_edge_hold":
+            cmd = self.compute_left_edge_hold_command(debug)
+            if cmd is not None:
+                return cmd, debug
+
+        speed = self.limited_speed if self.speed_mode == "limited" else self.cruise_speed
 
         d_error = line_error - self.last_line_error
         angular = -(self.line_kp * line_error + self.line_kd * d_error)
@@ -353,12 +380,71 @@ class CityRoadsController(object):
         cv2.putText(debug, "ERR %.1f" % line_error, (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         return cmd, debug
 
+    def compute_left_edge_hold_command(self, debug):
+        lane_debug = self.last_lane_debug or {}
+        width = debug.shape[1]
+        left_global = lane_debug.get("left_global")
+        x1 = lane_debug.get("roi_x1")
+        y1 = lane_debug.get("roi_y1")
+        y2 = lane_debug.get("roi_y2")
+        if left_global is None or x1 is None or y1 is None or y2 is None:
+            return None
+
+        left_ratio = float(left_global[0]) / float(max(1, width))
+        target_x = int(width * self.left_edge_target_ratio)
+        zone_max_x = int(width * self.left_edge_zone_max_ratio)
+        strong_x = int(width * self.left_edge_strong_correction_ratio)
+
+        cv2.line(debug, (target_x, y1), (target_x, y2), (0, 200, 0), 1)
+        cv2.line(debug, (zone_max_x, y1), (zone_max_x, y2), (0, 255, 255), 1)
+        cv2.line(debug, (strong_x, y1), (strong_x, y2), (0, 0, 255), 1)
+
+        direction = self.roundabout_direction.lower()
+        right_sign = -1.0 if direction == "left" else 1.0
+        left_sign = 1.0 if direction == "left" else -1.0
+
+        linear = self.crawl_speed if self.pulse_active() else 0.0
+        angular = 0.0
+        action = "STRAIGHT"
+
+        if left_ratio >= self.left_edge_strong_correction_ratio:
+            angular = right_sign * self.strong_turn_angular
+            action = "TURN_STRONG_IN"
+        elif left_ratio >= self.left_edge_zone_max_ratio:
+            angular = right_sign * self.medium_turn_angular
+            action = "TURN_MEDIUM_IN"
+        elif left_ratio > self.left_edge_target_ratio:
+            angular = right_sign * self.small_turn_angular
+            action = "TURN_SMALL_IN"
+        elif left_ratio < max(0.0, self.left_edge_target_ratio * 0.55):
+            angular = left_sign * self.small_turn_angular
+            action = "PULL_BACK_OUT"
+
+        angular = clamp(angular, -self.max_angular_speed, self.max_angular_speed)
+
+        cmd = Twist()
+        cmd.linear.x = linear
+        cmd.angular.z = angular if linear > 0.0 else 0.0
+
+        cv2.putText(debug, "MODE LEFT_EDGE_HOLD", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        cv2.putText(debug, "LEFT_X %.3f" % left_ratio, (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(debug, "ACT %s" % action, (10, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(debug, "PULSE %s" % ("ON" if linear > 0.0 else "OFF"), (10, 160),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        return cmd
+
     def detect_lane(self, frame, hsv, debug):
         if self.lane_mode == "dual_yellow":
             return self.detect_dual_yellow_lane(frame, hsv, debug)
         return self.detect_single_mask_lane(frame, hsv, debug)
 
     def detect_single_mask_lane(self, frame, hsv, debug):
+        self.last_lane_debug = {
+            "mode": "single_mask",
+            "left_global": None,
+            "right_global": None,
+            "lane_center": None,
+        }
         height, width = frame.shape[:2]
         x1, y1, x2, y2 = ratio_to_rect(width, height, self.line_roi)
         roi_hsv = hsv[y1:y2, x1:x2]
@@ -392,6 +478,13 @@ class CityRoadsController(object):
         error = (cx_global - (width // 2 + self.line_center_bias_px))
         cv2.circle(debug, (cx_global, cy_global), 8, (255, 0, 255), -1)
         cv2.line(debug, (width // 2 + self.line_center_bias_px, y1), (width // 2 + self.line_center_bias_px, y2), (255, 255, 0), 2)
+        self.last_lane_debug.update({
+            "roi_x1": x1,
+            "roi_y1": y1,
+            "roi_x2": x2,
+            "roi_y2": y2,
+            "lane_center": (cx_global, cy_global),
+        })
         return error, True
 
     def extract_center_from_contours(self, contours, min_area):
@@ -432,15 +525,29 @@ class CityRoadsController(object):
         left_mask = mask[:, :split_x]
         right_mask = mask[:, split_x:]
 
-        left_contour, left_center = self.extract_center_from_contours(find_contours(left_mask), self.left_line_min_area)
-        right_contour, right_center = self.extract_center_from_contours(find_contours(right_mask), self.right_line_min_area)
+        left_contours = find_contours(left_mask)
+        right_contours = find_contours(right_mask)
+        left_contour, left_center = self.extract_center_from_contours(left_contours, self.left_line_min_area)
+        right_contour, right_center = self.extract_center_from_contours(right_contours, self.right_line_min_area)
 
         reference_x = width // 2 + self.line_center_bias_px
         cv2.rectangle(debug, (x1, y1), (x2, y2), (0, 255, 255), 1)
         cv2.line(debug, (reference_x, y1), (reference_x, y2), (255, 255, 0), 2)
+        cv2.line(debug, (x1 + roi_width // 4, y1), (x1 + roi_width // 4, y2), (0, 180, 0), 1)
+        cv2.line(debug, (x1 + roi_width // 2, y1), (x1 + roi_width // 2, y2), (120, 120, 120), 1)
 
         left_global = None
         right_global = None
+
+        if self.debug_draw_all_lane_contours:
+            for contour in left_contours:
+                if cv2.contourArea(contour) <= 0:
+                    continue
+                cv2.drawContours(debug[y1:y2, x1:x1 + split_x], [contour], -1, (0, 120, 255), 1)
+            for contour in right_contours:
+                if cv2.contourArea(contour) <= 0:
+                    continue
+                cv2.drawContours(debug[y1:y2, x1 + split_x:x2], [contour], -1, (0, 220, 220), 1, offset=(split_x, 0))
 
         if left_contour is not None:
             cv2.drawContours(debug[y1:y2, x1:x1 + split_x], [left_contour], -1, (0, 255, 255), 2)
@@ -473,11 +580,26 @@ class CityRoadsController(object):
             lane_center_y = right_global[1]
             lane_source = "RIGHT_RECOVER"
 
+        self.last_lane_debug = {
+            "mode": "dual_yellow",
+            "roi_x1": x1,
+            "roi_y1": y1,
+            "roi_x2": x2,
+            "roi_y2": y2,
+            "left_global": left_global,
+            "right_global": right_global,
+            "left_count": len(left_contours),
+            "right_count": len(right_contours),
+            "lane_source": lane_source,
+            "lane_center": None,
+        }
+
         if lane_center_x is None:
             return self.last_line_error, False
 
         lane_center_x = int(clamp(lane_center_x, x1, x2 - 1))
         error = lane_center_x - reference_x
+        self.last_lane_debug["lane_center"] = (lane_center_x, lane_center_y)
 
         cv2.circle(debug, (lane_center_x, lane_center_y), 8, (255, 0, 255), -1)
         cv2.putText(debug, "LANE %s" % lane_source, (x1, max(15, y1 - 5)),

@@ -11,13 +11,25 @@ use_laser: true
 publish_debug_image: true
 
 lane_mode: "dual_yellow"
-yellow_hsv_lower: [15, 60, 60]
-yellow_hsv_upper: [40, 255, 255]
+yellow_hsv_lower: [25, 75, 131]
+yellow_hsv_upper: [80, 255, 255]
 lane_roi: [0.0, 0.58, 1.0, 1.0]
 left_line_min_area: 120
 right_line_min_area: 120
 expected_lane_width_px: 260
-allow_single_side_recover: true
+allow_single_side_recover: false
+lane_follow_strategy: "left_edge_hold"
+left_edge_target_ratio: 0.125
+left_edge_zone_max_ratio: 0.25
+left_edge_strong_correction_ratio: 0.50
+crawl_speed: 0.06
+small_turn_angular: 0.12
+medium_turn_angular: 0.20
+strong_turn_angular: 0.32
+control_pulse_seconds: 0.18
+control_idle_seconds: 0.08
+roundabout_direction: "left"
+debug_draw_all_lane_contours: true
 
 line_hsv_lower: [0, 0, 0]
 line_hsv_upper: [180, 255, 85]

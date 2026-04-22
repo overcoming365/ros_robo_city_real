@@ -123,6 +123,8 @@ class CityRoadsController(object):
         self.mode_until = 0.0
         self.mode_angular = 0.0
         self.mode_linear = 0.0
+        self.startup_phase = "ignore_ring"
+        self.startup_phase_until = 0.0
 
         self.team_name = rospy.get_param("~team_name", rospy.get_param("/team_name", "TeamName"))
         self.image_topic = rospy.get_param("~image_topic", rospy.get_param("/image_topic", "/usb_cam/image_raw"))
@@ -150,10 +152,19 @@ class CityRoadsController(object):
         self.small_turn_angular = float(rospy.get_param("~small_turn_angular", rospy.get_param("/small_turn_angular", 0.12)))
         self.medium_turn_angular = float(rospy.get_param("~medium_turn_angular", rospy.get_param("/medium_turn_angular", 0.20)))
         self.strong_turn_angular = float(rospy.get_param("~strong_turn_angular", rospy.get_param("/strong_turn_angular", 0.32)))
-        self.control_pulse_seconds = float(rospy.get_param("~control_pulse_seconds", rospy.get_param("/control_pulse_seconds", 0.18)))
-        self.control_idle_seconds = float(rospy.get_param("~control_idle_seconds", rospy.get_param("/control_idle_seconds", 0.08)))
+        self.control_pulse_seconds = float(rospy.get_param("~control_pulse_seconds", rospy.get_param("/control_pulse_seconds", 0.70)))
+        self.control_idle_seconds = float(rospy.get_param("~control_idle_seconds", rospy.get_param("/control_idle_seconds", 0.60)))
         self.roundabout_direction = rospy.get_param("~roundabout_direction", rospy.get_param("/roundabout_direction", "left"))
         self.debug_draw_all_lane_contours = parse_bool(rospy.get_param("~debug_draw_all_lane_contours", rospy.get_param("/debug_draw_all_lane_contours", True)))
+        self.step_motion_enabled = parse_bool(rospy.get_param("~step_motion_enabled", rospy.get_param("/step_motion_enabled", True)))
+        self.step_apply_to_search = parse_bool(rospy.get_param("~step_apply_to_search", rospy.get_param("/step_apply_to_search", True)))
+        self.startup_ignore_ring = parse_bool(rospy.get_param("~startup_ignore_ring", rospy.get_param("/startup_ignore_ring", True)))
+        self.startup_forward_seconds = float(rospy.get_param("~startup_forward_seconds", rospy.get_param("/startup_forward_seconds", 1.2)))
+        self.startup_turn_seconds = float(rospy.get_param("~startup_turn_seconds", rospy.get_param("/startup_turn_seconds", 1.3)))
+        self.startup_forward_speed = float(rospy.get_param("~startup_forward_speed", rospy.get_param("/startup_forward_speed", 0.06)))
+        self.startup_turn_speed = float(rospy.get_param("~startup_turn_speed", rospy.get_param("/startup_turn_speed", 0.05)))
+        self.startup_turn_angular = float(rospy.get_param("~startup_turn_angular", rospy.get_param("/startup_turn_angular", 0.22)))
+        self.startup_turn_direction = rospy.get_param("~startup_turn_direction", rospy.get_param("/startup_turn_direction", "left"))
 
         self.line_hsv_lower = rospy.get_param("~line_hsv_lower", rospy.get_param("/line_hsv_lower", [0, 0, 0]))
         self.line_hsv_upper = rospy.get_param("~line_hsv_upper", rospy.get_param("/line_hsv_upper", [180, 255, 85]))
@@ -236,6 +247,10 @@ class CityRoadsController(object):
             rospy.Subscriber(self.scan_topic, LaserScan, self.scan_callback, queue_size=1)
 
         self.say("team_info", self.team_name)
+        if self.startup_ignore_ring:
+            self.startup_phase_until = now_sec() + self.startup_forward_seconds
+        else:
+            self.startup_phase = "done"
         rospy.loginfo("city_roads_controller started")
 
     def say(self, key, payload=""):
@@ -261,10 +276,47 @@ class CityRoadsController(object):
         self.mode_angular = 0.0
 
     def pulse_active(self):
+        if not self.step_motion_enabled:
+            return True
         cycle = self.control_pulse_seconds + self.control_idle_seconds
         if cycle <= 0.0:
             return True
         return (now_sec() % cycle) < self.control_pulse_seconds
+
+    def startup_override_command(self, debug):
+        if not self.startup_ignore_ring or self.startup_phase == "done":
+            return None
+
+        current = now_sec()
+        pulse_on = self.pulse_active()
+        cmd = Twist()
+
+        if self.startup_phase == "ignore_ring":
+            if current >= self.startup_phase_until:
+                self.startup_phase = "startup_turn"
+                self.startup_phase_until = current + self.startup_turn_seconds
+            else:
+                cmd.linear.x = self.startup_forward_speed if pulse_on else 0.0
+                cmd.angular.z = 0.0
+                cv2.putText(debug, "STARTUP IGNORE RING", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                cv2.putText(debug, "ACT FORWARD %s" % ("ON" if pulse_on else "OFF"), (10, 100),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                return cmd
+
+        if self.startup_phase == "startup_turn":
+            if current >= self.startup_phase_until:
+                self.startup_phase = "done"
+                return None
+            turn_sign = 1.0 if self.startup_turn_direction.lower() == "left" else -1.0
+            cmd.linear.x = self.startup_turn_speed if pulse_on else 0.0
+            cmd.angular.z = turn_sign * self.startup_turn_angular if pulse_on else 0.0
+            cv2.putText(debug, "STARTUP %s TURN" % self.startup_turn_direction.upper(), (10, 70),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            cv2.putText(debug, "ACT TURN %s" % ("ON" if pulse_on else "OFF"), (10, 100),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            return cmd
+
+        return None
 
     def scan_callback(self, msg):
         front_samples = []
@@ -289,6 +341,10 @@ class CityRoadsController(object):
     def process_frame(self, frame):
         debug = frame.copy()
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        startup_cmd = self.startup_override_command(debug)
+        if startup_cmd is not None:
+            return startup_cmd, debug
 
         line_error, line_found = self.detect_lane(frame, hsv, debug)
         light_state = self.detect_traffic_light(hsv, debug)
@@ -356,9 +412,12 @@ class CityRoadsController(object):
         cmd = Twist()
         if not line_found:
             search_speed = (self.limited_speed if self.speed_mode == "limited" else self.cruise_speed) * 0.5
-            cmd.linear.x = search_speed
-            cmd.angular.z = self.line_search_turn_speed
+            pulse_on = self.pulse_active() if self.step_apply_to_search else True
+            cmd.linear.x = search_speed if pulse_on else 0.0
+            cmd.angular.z = self.line_search_turn_speed if pulse_on else 0.0
             cv2.putText(debug, "SEARCH LINE", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            cv2.putText(debug, "STEP %s" % ("ON" if pulse_on else "OFF"), (10, 100),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             return cmd, debug
 
         speed = self.limited_speed if self.speed_mode == "limited" else self.cruise_speed
@@ -368,10 +427,12 @@ class CityRoadsController(object):
         angular = clamp(angular, -self.max_angular_speed, self.max_angular_speed)
         self.last_line_error = line_error
 
-        cmd.linear.x = speed
-        cmd.angular.z = angular
+        pulse_on = self.pulse_active()
+        cmd.linear.x = speed if pulse_on else 0.0
+        cmd.angular.z = angular if pulse_on else 0.0
         cv2.putText(debug, "MODE %s" % self.speed_mode.upper(), (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         cv2.putText(debug, "ERR %.1f" % line_error, (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        cv2.putText(debug, "STEP %s" % ("ON" if pulse_on else "OFF"), (10, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         return cmd, debug
 
     def detect_lane(self, frame, hsv, debug):
@@ -472,6 +533,8 @@ class CityRoadsController(object):
         roi_width = max(1, x2 - x1)
         roi_height = max(1, y2 - y1)
         split_x = roi_width // 2
+        left_target_x = int(width * self.left_edge_target_ratio)
+        left_zone_x = int(width * self.left_edge_zone_max_ratio)
 
         mask = hsv_mask(roi_hsv, self.yellow_hsv_lower, self.yellow_hsv_upper)
         kernel = np.ones((5, 5), np.uint8)
@@ -491,7 +554,8 @@ class CityRoadsController(object):
         reference_x = width // 2 + self.line_center_bias_px
         cv2.rectangle(debug, (x1, y1), (x2, y2), (0, 255, 255), 1)
         cv2.line(debug, (reference_x, y1), (reference_x, y2), (255, 255, 0), 2)
-        cv2.line(debug, (x1 + roi_width // 4, y1), (x1 + roi_width // 4, y2), (0, 180, 0), 1)
+        cv2.line(debug, (left_target_x, y1), (left_target_x, y2), (0, 200, 0), 1)
+        cv2.line(debug, (left_zone_x, y1), (left_zone_x, y2), (0, 255, 255), 1)
         cv2.line(debug, (x1 + roi_width // 2, y1), (x1 + roi_width // 2, y2), (120, 120, 120), 1)
 
         left_global = None
@@ -588,6 +652,10 @@ class CityRoadsController(object):
         lane_center_x = int(clamp(lane_center_x, x1, x2 - 1))
         error = lane_center_x - reference_x
         self.last_lane_debug["lane_center"] = (lane_center_x, lane_center_y)
+
+        if left_real is not None:
+            left_ratio = float(left_real[0]) / float(max(1, width))
+            cv2.putText(debug, "LEFT_X %.3f" % left_ratio, (10, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
         cv2.circle(debug, (lane_center_x, lane_center_y), 8, (255, 0, 255), -1)
         cv2.putText(debug, "LANE %s" % lane_source, (x1, max(15, y1 - 5)),

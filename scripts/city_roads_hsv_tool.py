@@ -20,12 +20,12 @@ class HsvTool(object):
 
     def create_trackbars(self):
         config = [
-            ("LH", 0, 180),
-            ("LS", 0, 255),
-            ("LV", 0, 255),
-            ("UH", 180, 180),
+            ("LH", 25, 180),
+            ("LS", 75, 255),
+            ("LV", 131, 255),
+            ("UH", 80, 180),
             ("US", 255, 255),
-            ("UV", 85, 255),
+            ("UV", 255, 255),
         ]
         for name, value, maximum in config:
             cv2.createTrackbar(name, self.window, value, maximum, lambda value: None)

@@ -355,17 +355,11 @@ class CityRoadsController(object):
 
         cmd = Twist()
         if not line_found:
-            search_speed = self.crawl_speed if self.lane_follow_strategy == "left_edge_hold" else (
-                self.limited_speed if self.speed_mode == "limited" else self.cruise_speed) * 0.5
+            search_speed = (self.limited_speed if self.speed_mode == "limited" else self.cruise_speed) * 0.5
             cmd.linear.x = search_speed
             cmd.angular.z = self.line_search_turn_speed
             cv2.putText(debug, "SEARCH LINE", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
             return cmd, debug
-
-        if self.lane_follow_strategy == "left_edge_hold":
-            cmd = self.compute_left_edge_hold_command(debug)
-            if cmd is not None:
-                return cmd, debug
 
         speed = self.limited_speed if self.speed_mode == "limited" else self.cruise_speed
 
@@ -379,59 +373,6 @@ class CityRoadsController(object):
         cv2.putText(debug, "MODE %s" % self.speed_mode.upper(), (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         cv2.putText(debug, "ERR %.1f" % line_error, (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         return cmd, debug
-
-    def compute_left_edge_hold_command(self, debug):
-        lane_debug = self.last_lane_debug or {}
-        width = debug.shape[1]
-        left_global = lane_debug.get("left_global")
-        x1 = lane_debug.get("roi_x1")
-        y1 = lane_debug.get("roi_y1")
-        y2 = lane_debug.get("roi_y2")
-        if left_global is None or x1 is None or y1 is None or y2 is None:
-            return None
-
-        left_ratio = float(left_global[0]) / float(max(1, width))
-        target_x = int(width * self.left_edge_target_ratio)
-        zone_max_x = int(width * self.left_edge_zone_max_ratio)
-        strong_x = int(width * self.left_edge_strong_correction_ratio)
-
-        cv2.line(debug, (target_x, y1), (target_x, y2), (0, 200, 0), 1)
-        cv2.line(debug, (zone_max_x, y1), (zone_max_x, y2), (0, 255, 255), 1)
-        cv2.line(debug, (strong_x, y1), (strong_x, y2), (0, 0, 255), 1)
-
-        direction = self.roundabout_direction.lower()
-        right_sign = -1.0 if direction == "left" else 1.0
-        left_sign = 1.0 if direction == "left" else -1.0
-
-        linear = self.crawl_speed if self.pulse_active() else 0.0
-        angular = 0.0
-        action = "STRAIGHT"
-
-        if left_ratio >= self.left_edge_strong_correction_ratio:
-            angular = right_sign * self.strong_turn_angular
-            action = "TURN_STRONG_IN"
-        elif left_ratio >= self.left_edge_zone_max_ratio:
-            angular = right_sign * self.medium_turn_angular
-            action = "TURN_MEDIUM_IN"
-        elif left_ratio > self.left_edge_target_ratio:
-            angular = right_sign * self.small_turn_angular
-            action = "TURN_SMALL_IN"
-        elif left_ratio < max(0.0, self.left_edge_target_ratio * 0.55):
-            angular = left_sign * self.small_turn_angular
-            action = "PULL_BACK_OUT"
-
-        angular = clamp(angular, -self.max_angular_speed, self.max_angular_speed)
-
-        cmd = Twist()
-        cmd.linear.x = linear
-        cmd.angular.z = angular if linear > 0.0 else 0.0
-
-        cv2.putText(debug, "MODE LEFT_EDGE_HOLD", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-        cv2.putText(debug, "LEFT_X %.3f" % left_ratio, (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(debug, "ACT %s" % action, (10, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(debug, "PULSE %s" % ("ON" if linear > 0.0 else "OFF"), (10, 160),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        return cmd
 
     def detect_lane(self, frame, hsv, debug):
         if self.lane_mode == "dual_yellow":
@@ -509,6 +450,21 @@ class CityRoadsController(object):
         cy = int(moments["m01"] / moments["m00"])
         return best, (cx, cy)
 
+    def extract_tracking_point(self, contour, fallback_center):
+        if contour is None:
+            return None
+        points = contour.reshape(-1, 2)
+        if points.size == 0:
+            return fallback_center
+        max_y = int(np.max(points[:, 1]))
+        band_threshold = max_y - 18
+        band_points = points[points[:, 1] >= band_threshold]
+        if band_points.size == 0:
+            band_points = points
+        track_x = int(np.mean(band_points[:, 0]))
+        track_y = int(np.mean(band_points[:, 1]))
+        return (track_x, track_y)
+
     def detect_dual_yellow_lane(self, frame, hsv, debug):
         height, width = frame.shape[:2]
         x1, y1, x2, y2 = ratio_to_rect(width, height, self.lane_roi)
@@ -529,6 +485,8 @@ class CityRoadsController(object):
         right_contours = find_contours(right_mask)
         left_contour, left_center = self.extract_center_from_contours(left_contours, self.left_line_min_area)
         right_contour, right_center = self.extract_center_from_contours(right_contours, self.right_line_min_area)
+        left_track = self.extract_tracking_point(left_contour, left_center)
+        right_track = self.extract_tracking_point(right_contour, right_center)
 
         reference_x = width // 2 + self.line_center_bias_px
         cv2.rectangle(debug, (x1, y1), (x2, y2), (0, 255, 255), 1)
@@ -538,6 +496,10 @@ class CityRoadsController(object):
 
         left_global = None
         right_global = None
+        left_real = None
+        right_real = None
+        right_virtual = None
+        left_virtual = None
 
         if self.debug_draw_all_lane_contours:
             for contour in left_contours:
@@ -551,16 +513,18 @@ class CityRoadsController(object):
 
         if left_contour is not None:
             cv2.drawContours(debug[y1:y2, x1:x1 + split_x], [left_contour], -1, (0, 255, 255), 2)
-            left_global = (x1 + left_center[0], y1 + left_center[1])
-            cv2.circle(debug, left_global, 7, (0, 255, 255), -1)
-            cv2.putText(debug, "LEFT", (left_global[0] - 18, max(15, left_global[1] - 8)),
+            left_real = (x1 + left_track[0], y1 + left_track[1])
+            left_global = left_real
+            cv2.circle(debug, left_real, 7, (0, 255, 255), -1)
+            cv2.putText(debug, "LEFT", (left_real[0] - 18, max(15, left_real[1] - 8)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
 
         if right_contour is not None:
             cv2.drawContours(debug[y1:y2, x1 + split_x:x2], [right_contour], -1, (0, 165, 255), 2, offset=(split_x, 0))
-            right_global = (x1 + split_x + right_center[0], y1 + right_center[1])
-            cv2.circle(debug, right_global, 7, (0, 165, 255), -1)
-            cv2.putText(debug, "RIGHT", (right_global[0] - 22, max(15, right_global[1] - 8)),
+            right_real = (x1 + split_x + right_track[0], y1 + right_track[1])
+            right_global = right_real
+            cv2.circle(debug, right_real, 7, (0, 165, 255), -1)
+            cv2.putText(debug, "RIGHT", (right_real[0] - 22, max(15, right_real[1] - 8)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 165, 255), 1)
 
         lane_center_x = None
@@ -572,13 +536,33 @@ class CityRoadsController(object):
             lane_center_y = int((left_global[1] + right_global[1]) / 2.0)
             lane_source = "DUAL"
         elif self.allow_single_side_recover and left_global is not None:
-            lane_center_x = int(left_global[0] + self.expected_lane_width_px / 2.0)
+            right_virtual = (
+                int(clamp(left_global[0] + self.expected_lane_width_px, x1, x2 - 1)),
+                left_global[1]
+            )
+            lane_center_x = int((left_global[0] + right_virtual[0]) / 2.0)
             lane_center_y = left_global[1]
             lane_source = "LEFT_RECOVER"
         elif self.allow_single_side_recover and right_global is not None:
-            lane_center_x = int(right_global[0] - self.expected_lane_width_px / 2.0)
+            left_virtual = (
+                int(clamp(right_global[0] - self.expected_lane_width_px, x1, x2 - 1)),
+                right_global[1]
+            )
+            lane_center_x = int((left_virtual[0] + right_global[0]) / 2.0)
             lane_center_y = right_global[1]
             lane_source = "RIGHT_RECOVER"
+
+        if right_virtual is not None:
+            cv2.circle(debug, right_virtual, 6, (255, 180, 0), 2)
+            cv2.putText(debug, "VRIGHT", (right_virtual[0] - 26, max(15, right_virtual[1] - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 180, 0), 1)
+            cv2.line(debug, left_global, right_virtual, (255, 180, 0), 1)
+
+        if left_virtual is not None:
+            cv2.circle(debug, left_virtual, 6, (255, 180, 0), 2)
+            cv2.putText(debug, "VLEFT", (left_virtual[0] - 22, max(15, left_virtual[1] - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 180, 0), 1)
+            cv2.line(debug, left_virtual, right_global, (255, 180, 0), 1)
 
         self.last_lane_debug = {
             "mode": "dual_yellow",
@@ -588,6 +572,10 @@ class CityRoadsController(object):
             "roi_y2": y2,
             "left_global": left_global,
             "right_global": right_global,
+            "left_real": left_real,
+            "right_real": right_real,
+            "left_virtual": left_virtual,
+            "right_virtual": right_virtual,
             "left_count": len(left_contours),
             "right_count": len(right_contours),
             "lane_source": lane_source,

@@ -17,8 +17,8 @@ lane_roi: [0.0, 0.58, 1.0, 1.0]
 left_line_min_area: 120
 right_line_min_area: 120
 expected_lane_width_px: 260
-allow_single_side_recover: false
-lane_follow_strategy: "left_edge_hold"
+allow_single_side_recover: true
+lane_follow_strategy: "dual_center"
 left_edge_target_ratio: 0.125
 left_edge_zone_max_ratio: 0.25
 left_edge_strong_correction_ratio: 0.50
